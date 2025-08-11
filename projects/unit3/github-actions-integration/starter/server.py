@@ -30,8 +30,7 @@ DEFAULT_TEMPLATES = {
     "security.md": "Security"
 }
 
-# TODO: Add path to events file where webhook_server.py stores events
-# Hint: EVENTS_FILE = Path(__file__).parent / "github_events.json"
+EVENTS_FILE = Path(__file__).parent / "github_events.json"
 
 # Type mapping for PR templates
 TYPE_MAPPING = {
@@ -57,7 +56,8 @@ TYPE_MAPPING = {
 async def analyze_file_changes(
     base_branch: str = "main",
     include_diff: bool = True,
-    max_diff_lines: int = 500
+    max_diff_lines: int = 500,
+    working_directory: Optional[str] = None
 ) -> str:
     """Get the full diff and list of changed files in the current git repository.
     
@@ -65,21 +65,39 @@ async def analyze_file_changes(
         base_branch: Base branch to compare against (default: main)
         include_diff: Include the full diff content (default: true)
         max_diff_lines: Maximum number of diff lines to include (default: 500)
+        working_directory: Directory to run git commands in (default: current directory)
     """
     try:
+        # Try to get working directory from roots first
+        if working_directory is None:
+            try:
+                context = mcp.get_context()
+                roots_result = await context.session.list_roots()
+                # Get the first root - Claude Code sets this to the CWD
+                root = roots_result.roots[0]
+                # FileUrl object has a .path property that gives us the path directly
+                working_directory = root.uri.path
+            except Exception:
+                # If we can't get roots, fall back to current directory
+                pass
+        
+        # Use provided working directory or current directory
+        cwd = working_directory if working_directory else os.getcwd()
         # Get list of changed files
         files_result = subprocess.run(
             ["git", "diff", "--name-status", f"{base_branch}...HEAD"],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            cwd=cwd
         )
         
         # Get diff statistics
         stat_result = subprocess.run(
             ["git", "diff", "--stat", f"{base_branch}...HEAD"],
             capture_output=True,
-            text=True
+            text=True,
+            cwd=cwd
         )
         
         # Get the actual diff if requested
@@ -89,11 +107,12 @@ async def analyze_file_changes(
             diff_result = subprocess.run(
                 ["git", "diff", f"{base_branch}...HEAD"],
                 capture_output=True,
-                text=True
+                text=True,
+                cwd=cwd
             )
             diff_lines = diff_result.stdout.split('\n')
             
-            # Check if we need to truncate (learned from Module 1)
+            # Check if we need to truncate
             if len(diff_lines) > max_diff_lines:
                 diff_content = '\n'.join(diff_lines[:max_diff_lines])
                 diff_content += f"\n\n... Output truncated. Showing {max_diff_lines} of {len(diff_lines)} lines ..."
@@ -106,7 +125,8 @@ async def analyze_file_changes(
         commits_result = subprocess.run(
             ["git", "log", "--oneline", f"{base_branch}..HEAD"],
             capture_output=True,
-            text=True
+            text=True,
+            cwd=cwd
         )
         
         analysis = {
@@ -125,6 +145,7 @@ async def analyze_file_changes(
         return json.dumps({"error": f"Git error: {e.stderr}"})
     except Exception as e:
         return json.dumps({"error": str(e)})
+
 
 
 @mcp.tool()
@@ -181,13 +202,16 @@ async def get_recent_actions_events(limit: int = 10) -> str:
     Args:
         limit: Maximum number of events to return (default: 10)
     """
-    # TODO: Implement this function
-    # 1. Check if EVENTS_FILE exists
-    # 2. Read the JSON file
-    # 3. Return the most recent events (up to limit)
-    # 4. Return empty list if file doesn't exist
-    
-    return json.dumps({"message": "TODO: Implement get_recent_actions_events"})
+    try:
+        if EVENTS_FILE.exists():
+            with open(EVENTS_FILE, 'r') as file:
+                events = json.load(file)
+            recent_events = events[-limit:]
+            return json.dumps(recent_events, indent=2)
+        else:
+            return json.dumps([])
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -197,14 +221,32 @@ async def get_workflow_status(workflow_name: Optional[str] = None) -> str:
     Args:
         workflow_name: Optional specific workflow name to filter by
     """
-    # TODO: Implement this function
-    # 1. Read events from EVENTS_FILE
-    # 2. Filter events for workflow_run events
-    # 3. If workflow_name provided, filter by that name
-    # 4. Group by workflow and show latest status
-    # 5. Return formatted workflow status information
-    
-    return json.dumps({"message": "TODO: Implement get_workflow_status"})
+    try:
+        if EVENTS_FILE.exists():
+            with open(EVENTS_FILE, 'r') as file:
+                events = json.load(file)
+            
+            workflow_events = [event for event in events if event.get('workflow_run')]
+            
+            if workflow_name:
+                workflow_events = [event for event in workflow_events if event['workflow_run'].get('name') == workflow_name]
+            
+            # Group by workflow name and get the latest status
+            latest_status = {}
+            for event in workflow_events:
+                workflow = event['workflow_run'].get('name')
+                status = event['workflow_run'].get('status')
+                if workflow not in latest_status or event.get('timestamp') > latest_status[workflow].get('timestamp'):
+                    latest_status[workflow] = {
+                        'status': status,
+                        'timestamp': event.get('timestamp')
+                    }
+            
+            return json.dumps(latest_status, indent=2)
+        else:
+            return json.dumps({})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
 
 # ===== Module 2: MCP Prompts =====
@@ -212,40 +254,44 @@ async def get_workflow_status(workflow_name: Optional[str] = None) -> str:
 @mcp.prompt()
 async def analyze_ci_results():
     """Analyze recent CI/CD results and provide insights."""
-    # TODO: Implement this prompt
-    # Return a string with instructions for Claude to:
-    # 1. Use get_recent_actions_events() 
-    # 2. Use get_workflow_status()
-    # 3. Analyze results and provide insights
-    
-    return "TODO: Implement analyze_ci_results prompt"
+    return """
+    1. Use `get_recent_actions_events(limit=10)` to fetch the latest CI/CD events.
+    2. Use `get_workflow_status()` to get the current status of all workflows.
+    3. Analyze the results to identify any failed workflows or unusual patterns.
+    4. Provide insights and recommendations based on the analysis.
+    """
 
 
 @mcp.prompt()
 async def create_deployment_summary():
     """Generate a deployment summary for team communication."""
-    # TODO: Implement this prompt
-    # Return a string that guides Claude to create a deployment summary
-    
-    return "TODO: Implement create_deployment_summary prompt"
+    return """
+    1. Use `get_workflow_status()` to get the latest status of all workflows.
+    2. Summarize the deployment status, highlighting any successful deployments and failed workflows.
+    3. Provide recommendations for next steps based on the deployment status.
+    """
 
 
 @mcp.prompt()
 async def generate_pr_status_report():
     """Generate a comprehensive PR status report including CI/CD results."""
-    # TODO: Implement this prompt
-    # Return a string that guides Claude to combine code changes with CI/CD status
-    
-    return "TODO: Implement generate_pr_status_report prompt"
+    return """
+    1. Use `analyze_file_changes(base_branch='main', include_diff=True)` to get the code changes in the PR.
+    2. Use `get_workflow_status()` to get the CI/CD status for the PR.
+    3. Combine the code changes and CI/CD status to generate a comprehensive PR status report.
+    4. Highlight any critical issues or areas of concern.
+    """
 
 
 @mcp.prompt()
 async def troubleshoot_workflow_failure():
     """Help troubleshoot a failing GitHub Actions workflow."""
-    # TODO: Implement this prompt
-    # Return a string that guides Claude through troubleshooting steps
-    
-    return "TODO: Implement troubleshoot_workflow_failure prompt"
+    return """
+    1. Use `get_recent_actions_events(limit=10)` to identify recent workflow failures.
+    2. Use `get_workflow_status(workflow_name='failed_workflow_name')` to get detailed status of the failed workflow.
+    3. Analyze the workflow logs and events to identify the root cause of the failure.
+    4. Provide step-by-step guidance to troubleshoot and fix the workflow.
+    """
 
 
 if __name__ == "__main__":
