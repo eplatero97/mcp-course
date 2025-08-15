@@ -251,13 +251,15 @@ async def send_slack_notification(message: str) -> str:
         return "Error: SLACK_WEBHOOK_URL environment variable not set"
     
     try:
-        # TODO: Import requests library
-        # TODO: Send POST request to webhook_url with JSON payload
-        # TODO: Include the message in the JSON data
-        # TODO: Handle the response and return appropriate status
+        import requests
         
-        # For now, return a placeholder
-        return f"TODO: Implement Slack webhook POST request for message: {message[:50]}..."
+        payload = {"text": message}
+        response = requests.post(webhook_url, json=payload)
+        
+        if response.status_code == 200:
+            return "Message sent successfully to Slack"
+        else:
+            return f"Failed to send message to Slack: {response.text}"
         
     except Exception as e:
         return f"Error sending message: {str(e)}"
